@@ -1,0 +1,59 @@
+# XcodeGen project for the iPhone/iPad app (GitHub Actions runs `xcodegen generate`).
+# Two targets: the app, and a Share-sheet action ("Convert with FileConvert") that appears when
+# you long-press a file in the Files app (or Photos) and tap Share.
+name: FileConvert
+options:
+  bundleIdPrefix: com.fileconvert
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    CODE_SIGN_STYLE: Automatic
+targets:
+  FileConvert:
+    type: application
+    platform: iOS
+    sources: [App, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.fileconvert.app
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        INFOPLIST_KEY_CFBundleDisplayName: FileConvert
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: FileConvert
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UISupportedInterfaceOrientations~ipad:
+          [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown,
+           UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: false
+    dependencies:
+      - target: ConvertAction
+  ConvertAction:
+    type: app-extension
+    platform: iOS
+    sources: [Extension, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.fileconvert.app.convert
+    info:
+      path: Extension/Info.plist
+      properties:
+        CFBundleDisplayName: Convert with FileConvert
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.ui-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ActionViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsImageWithMaxCount: 20
+              NSExtensionActivationSupportsMovieWithMaxCount: 20
+              NSExtensionActivationSupportsFileWithMaxCount: 20
+            NSExtensionActionWantsFullScreenPresentation: true

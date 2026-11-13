@@ -1,0 +1,135 @@
+# Builds FileConvert for Windows, macOS and iPhone on GitHub's machines, then publishes
+# FileConvert-Setup.exe, FileConvert.dmg and FileConvert.ipa on the repo's Releases page.
+# Runs on every push to main, or by hand from the Actions tab ("Run workflow").
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python packages
+        run: python -m pip install -r requirements.txt pyinstaller
+      - name: Download ffmpeg (audio and video)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ff.zip
+          Expand-Archive ff.zip -DestinationPath ff
+          New-Item -ItemType Directory -Force -Path bin | Out-Null
+          Copy-Item (Get-ChildItem ff -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName bin\ffmpeg.exe
+      - name: Build FileConvert.exe
+        run: >
+          python -m PyInstaller --noconfirm --clean --windowed --name FileConvert
+          --icon assets\icon.ico --collect-all pillow_heif
+          --collect-submodules fileconvert --collect-submodules comtypes launcher.py
+      - name: Add ffmpeg to the app
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\FileConvert\bin | Out-Null
+          Copy-Item bin\ffmpeg.exe dist\FileConvert\bin\
+      - name: Smoke test (convert a picture and a sound with the built app)
+        shell: pwsh
+        run: |
+          python -c "from PIL import Image; Image.new('RGB',(64,64),(200,80,40)).save('smoke.png')"
+          & bin\ffmpeg.exe -loglevel error -f lavfi -i "sine=f=440:d=1" smoke.wav
+          Start-Process -Wait -FilePath dist\FileConvert\FileConvert.exe -ArgumentList 'run','--to','jpg',"$PWD\smoke.png"
+          Start-Process -Wait -FilePath dist\FileConvert\FileConvert.exe -ArgumentList 'run','--to','mp3',"$PWD\smoke.wav"
+          if (!(Test-Path smoke.jpg) -or !(Test-Path smoke.mp3)) { throw "The built app didn't convert the test files" }
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\iscc.exe" /DAppVersion=1.0.${{ github.run_number }} packaging\windows\FileConvert.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/FileConvert-Setup.exe
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Use the newest Xcode (Liquid Glass needs Xcode 26)
+        run: |
+          XC=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+      - name: Install Python packages
+        run: python -m pip install -r requirements.txt pyinstaller
+      - name: Build FileConvert.app and FileConvert.dmg
+        run: PYTHON=python bash packaging/macos/build_app.sh 1.0.${{ github.run_number }}
+      - name: Smoke test
+        run: |
+          python -c "from PIL import Image; Image.new('RGB',(64,64),(200,80,40)).save('smoke.png')"
+          dist/FileConvert.app/Contents/MacOS/FileConvert run --to jpg "$PWD/smoke.png"
+          test -f smoke.jpg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/FileConvert.dmg
+
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use the newest Xcode
+        run: |
+          XC=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+      - name: Generate the Xcode project
+        run: |
+          brew install xcodegen
+          cd ios && xcodegen generate
+      - name: Build (unsigned)
+        run: |
+          cd ios
+          xcodebuild -project FileConvert.xcodeproj -target FileConvert -configuration Release \
+            -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+      - name: Package FileConvert.ipa
+        run: |
+          mkdir -p Payload dist
+          cp -R ios/build/Release-iphoneos/FileConvert.app Payload/
+          zip -qry dist/FileConvert.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios
+          path: dist/FileConvert.ipa
+
+  release:
+    needs: [windows, macos, ios]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - run: ls -la out
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: FileConvert 1.0.${{ github.run_number }}
+          make_latest: true
+          fail_on_unmatched_files: false
+          files: out/*
+          body: |
+            **Windows:** download `FileConvert-Setup.exe` and run it. If SmartScreen says "Windows protected your PC", click *More info*, then *Run anyway* (the app isn't signed with a paid certificate).
+
+            **Mac (Apple silicon):** open `FileConvert.dmg` and drag FileConvert to Applications, then open it there. The first time, macOS may block it: open *System Settings > Privacy & Security*, click *Open Anyway*. Then allow FileConvert under *Accessibility*, and let it control Finder.
+
+            **iPhone / iPad:** `FileConvert.ipa` is unsigned. Install it with Sideloadly or AltStore using your Apple ID (free accounts must refresh it every 7 days), or sign it with an Apple Developer account. Then in the Files app: press and hold a file > Share > Convert with FileConvert.

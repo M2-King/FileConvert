@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.spec
+bin/ffmpeg
+bin/ffmpeg.exe
+ios/*.xcodeproj/
+ios/build/
+Payload/
+.DS_Store
