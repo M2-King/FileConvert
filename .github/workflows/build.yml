@@ -120,6 +120,15 @@ jobs:
           path: out
           merge-multiple: true
       - run: ls -la out
+      - name: Keep a copy on the "downloads" branch (so the files can be fetched and sent in chat)
+        continue-on-error: true
+        run: |
+          mkdir pub && cp out/* pub/ && cd pub
+          git init -q -b downloads
+          git add -A
+          git -c user.name="github-actions" -c user.email="github-actions@users.noreply.github.com" \
+            commit -qm "Build 1.0.${{ github.run_number }}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" downloads
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}
