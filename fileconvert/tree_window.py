@@ -79,8 +79,7 @@ class TreeWindow:
     def release_screen(self, x, y):
         """Let go after holding: convert if over a format, otherwise stay open for a tap."""
         if not self.lay:
-            self.cancel()
-            return
+            return                              # still finding the file: the branches appear shortly
         idx = self.renderer.hit(*self._local(x, y))
         if idx is not None:
             self._choose(idx)

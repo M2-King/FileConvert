@@ -24,6 +24,7 @@ from pathlib import Path
 
 from .formats import common_targets
 from .system import app_dir, get_logger, settings
+from .ui import notify
 
 AGENT_TITLE = "FileConvert Agent"
 MAGIC = 0xFC0FC0                      # tags the mouse-up we inject, so our own hook ignores it
@@ -131,38 +132,64 @@ def _send_left_up():
 
 # ----------------------------------------------------------------------------- selected files
 
-def selected_files(root_hwnd):
-    """Paths selected in the Explorer window (or desktop) whose top-level window is root_hwnd."""
-    import comtypes
+def selected_files(root_hwnd, shell=None):
+    """Paths selected in the Explorer window (or on the desktop) whose top-level window is root_hwnd.
+    Tries several ways, because each can fail on some Windows setups."""
+    log = get_logger()
+    desktop = _class_name(root_hwnd) in ("Progman", "WorkerW")
+    attempts = ([("desktop list", _desktop_listview_selection), ("desktop COM", lambda: _desktop_com_selection())]
+                if desktop else
+                [("Shell COM", lambda: _explorer_com_selection(root_hwnd, shell)),
+                 ("PowerShell", lambda: _explorer_powershell_selection(root_hwnd))])
+    for name, fn in attempts:
+        started = time.time()
+        try:
+            paths = [p for p in fn() if p]
+            log.info("Selection via %s: %d item(s) in %.2fs", name, len(paths), time.time() - started)
+            if paths:
+                return paths
+        except Exception as e:
+            log.warning("Selection via %s failed: %s", name, e)
+    return []
+
+
+def _explorer_com_selection(root_hwnd, shell=None):
     import comtypes.client
-    comtypes.CoInitialize()
-    try:
-        if _class_name(root_hwnd) in ("Progman", "WorkerW"):
-            return _desktop_selection()
-        shell = comtypes.client.CreateObject("Shell.Application", dynamic=True)
-        title = _window_text(root_hwnd)
-        found, preferred = [], []
-        windows = shell.Windows()
-        for i in range(windows.Count):
-            try:
-                w = windows.Item(i)
-                if w is None or int(w.HWND) != int(root_hwnd):
-                    continue
-                items = w.Document.SelectedItems()
-                paths = [items.Item(k).Path for k in range(items.Count)]
-                if not paths:
-                    continue
-                found = found or paths
-                if title.startswith(str(w.LocationName)):      # the visible tab (Windows 11 tabs)
-                    preferred = paths
-            except Exception:
+    shell = shell or comtypes.client.CreateObject("Shell.Application", dynamic=True)
+    title = _window_text(root_hwnd)
+    found, preferred = [], []
+    windows = shell.Windows()
+    for i in range(windows.Count):
+        try:
+            w = windows.Item(i)
+            if w is None or int(w.HWND) != int(root_hwnd):
                 continue
-        return preferred or found
-    finally:
-        comtypes.CoUninitialize()
+            items = w.Document.SelectedItems()
+            paths = [items.Item(k).Path for k in range(items.Count)]
+            if not paths:
+                continue
+            found = found or paths
+            if title.startswith(str(w.LocationName)):          # the visible tab (Windows 11 tabs)
+                preferred = paths
+        except Exception:
+            continue
+    return preferred or found
 
 
-def _desktop_selection():
+_PS_SCRIPT = (
+    "$h=[int64]$env:FC_HWND; (New-Object -ComObject Shell.Application).Windows() | "
+    "Where-Object { [int64]$_.HWND -eq $h } | ForEach-Object { $_.Document.SelectedItems() } | "
+    "ForEach-Object { $_.Path }")
+
+
+def _explorer_powershell_selection(root_hwnd):
+    env = dict(os.environ, FC_HWND=str(int(root_hwnd)))
+    proc = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _PS_SCRIPT],
+                          capture_output=True, text=True, timeout=8, env=env, creationflags=0x08000000)
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
+def _desktop_com_selection():
     from comtypes.automation import VARIANT
     from comtypes.client import CreateObject, GetModule
     from comtypes.client.dynamic import Dispatch
@@ -174,6 +201,97 @@ def _desktop_selection():
     return [items.Item(k).Path for k in range(items.Count)]
 
 
+class LVITEMW(ctypes.Structure):
+    _fields_ = [("mask", wintypes.UINT), ("iItem", ctypes.c_int), ("iSubItem", ctypes.c_int),
+                ("state", wintypes.UINT), ("stateMask", wintypes.UINT), ("pszText", ctypes.c_void_p),
+                ("cchTextMax", ctypes.c_int), ("iImage", ctypes.c_int), ("lParam", wintypes.LPARAM),
+                ("iIndent", ctypes.c_int), ("iGroupId", ctypes.c_int), ("cColumns", wintypes.UINT),
+                ("puColumns", ctypes.c_void_p), ("piColFmt", ctypes.c_void_p), ("iGroup", ctypes.c_int)]
+
+
+def _desktop_listview():
+    """The desktop's icon list (a SysListView32 inside Progman or a WorkerW window)."""
+    find = user32.FindWindowExW
+    find.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
+    find.restype = wintypes.HWND
+    hosts = [user32.FindWindowW("Progman", None)]
+    w = None
+    while True:
+        w = find(None, w, "WorkerW", None)
+        if not w:
+            break
+        hosts.append(w)
+    for host in hosts:
+        view = find(host, None, "SHELLDLL_DefView", None) if host else None
+        lv = find(view, None, "SysListView32", None) if view else None
+        if lv:
+            return lv
+    return None
+
+
+def _desktop_folders():
+    buf = ctypes.create_unicode_buffer(260)
+    folders = []
+    for csidl in (0x10, 0x19):                       # your Desktop (OneDrive aware), Public Desktop
+        if ctypes.windll.shell32.SHGetFolderPathW(None, csidl, None, 0, buf) == 0:
+            folders.append(Path(buf.value))
+    return folders
+
+
+def _desktop_listview_selection():
+    """Read the selected icon names straight from the desktop list, then find those files."""
+    lv = _desktop_listview()
+    if not lv:
+        return []
+    send = user32.SendMessageW
+    send.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    send.restype = LRESULT
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(lv, ctypes.byref(pid))
+    k32 = kernel32
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.VirtualAllocEx.restype = ctypes.c_void_p
+    k32.VirtualAllocEx.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_size_t, wintypes.DWORD, wintypes.DWORD]
+    k32.WriteProcessMemory.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+    k32.ReadProcessMemory.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+    k32.VirtualFreeEx.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_size_t, wintypes.DWORD]
+    proc = k32.OpenProcess(0x0008 | 0x0010 | 0x0020 | 0x0400, False, pid.value)
+    if not proc:
+        return []
+    names = []
+    remote = k32.VirtualAllocEx(proc, None, 4096, 0x1000, 0x04)
+    try:
+        text_at = remote + 512
+        i = -1
+        all_ones = (1 << (8 * ctypes.sizeof(ctypes.c_void_p))) - 1
+        for _ in range(500):
+            i = send(lv, 0x100C, i if i >= 0 else all_ones, 0x0002)    # LVM_GETNEXTITEM, LVNI_SELECTED
+            if i < 0:
+                break
+            item = LVITEMW(mask=0x0001, iItem=i, iSubItem=0, pszText=text_at, cchTextMax=1024)
+            k32.WriteProcessMemory(proc, remote, ctypes.byref(item), ctypes.sizeof(item), None)
+            send(lv, 0x1073, i, remote)                                     # LVM_GETITEMTEXTW
+            buf = ctypes.create_unicode_buffer(1024)
+            k32.ReadProcessMemory(proc, text_at, buf, ctypes.sizeof(buf), None)
+            if buf.value:
+                names.append(buf.value)
+    finally:
+        k32.VirtualFreeEx(proc, remote, 0, 0x8000)
+        k32.CloseHandle(proc)
+    paths = []
+    for name in names:                     # names may hide the extension ("holiday" for holiday.mov)
+        for folder in _desktop_folders():
+            exact = folder / name
+            if exact.is_file():
+                paths.append(str(exact))
+                break
+            matches = [m for m in folder.glob(name + ".*") if m.is_file() and m.suffix.lower() != ".lnk"]
+            if matches:
+                paths.append(str(matches[0]))
+                break
+    return paths
+
+
 # ----------------------------------------------------------------------------- the agent
 
 class Agent:
@@ -181,6 +299,7 @@ class Agent:
         s = settings()
         self.hold = max(0.3, int(s.get("hold_ms", 550)) / 1000)
         self.events = queue.Queue()
+        self.requests = queue.Queue()
         self.log = get_logger()
         self.pressing = False        # left button down on a file view, still waiting
         self.captured = False        # hold fired: we own this press until the real mouse-up
@@ -265,28 +384,48 @@ class Agent:
             self.log.exception("Couldn't open the branch window")
             self.window = None
 
+    def _selection_worker(self):
+        """Runs for the helper's lifetime: COM is set up once, so holds get an answer quickly."""
+        shell = None
+        try:
+            import comtypes
+            import comtypes.client
+            comtypes.CoInitialize()
+            shell = comtypes.client.CreateObject("Shell.Application", dynamic=True)
+            self.log.info("Shell COM ready")
+        except Exception as e:
+            self.log.warning("Shell COM unavailable (%s); using fallbacks", e)
+        while True:
+            root = self.requests.get()
+            if root is None:
+                break
+            try:
+                paths = selected_files(root, shell)
+            except Exception:
+                self.log.exception("Couldn't read the Explorer selection")
+                paths = []
+            self.events.put(("selection", paths))
+
     def _fire(self):
         if not self.pressing:
             return
         self.pressing = False
         self.captured = True
         _send_left_up()                                         # Explorer: a plain click (selects)
-        root = self.down[2]
-
-        def fetch():
-            try:
-                paths = selected_files(root)
-            except Exception:
-                self.log.exception("Couldn't read the Explorer selection")
-                paths = []
-            self.events.put(("selection", paths))
-        threading.Thread(target=fetch, daemon=True).start()
+        self.log.info("Hold at %s,%s on %s", self.down[0], self.down[1], _class_name(self.down[2]))
+        self.requests.put(self.down[2])
 
     def _selection(self, paths):
         files = [p for p in paths if os.path.isfile(p)]
         options = common_targets([Path(p).suffix for p in files], self.engines) if files else []
         if not options or not self.window:
             self._close_window()
+            if not files:
+                notify("Couldn't tell which file you're holding. Try again, or right-click it > Convert to.",
+                       "FileConvert", force=True)
+            elif not options:
+                kinds = ", ".join(sorted({Path(f).suffix.lower() for f in files}))
+                notify(f"No conversions for {kinds} files yet.", "FileConvert", force=True)
             return
         self.files = files
         self.window.open(options, files)
@@ -306,6 +445,15 @@ class Agent:
         self.window = None
 
     def _pump(self):
+        try:
+            self._pump_events()
+        except Exception:
+            self.log.exception("Hold helper error")
+            self.captured = False
+            self._close_window()
+        self.tk.after(8, self._pump)
+
+    def _pump_events(self):
         while True:
             try:
                 ev = self.events.get_nowait()
@@ -329,7 +477,6 @@ class Agent:
                 self.window.release_screen(ev[1], ev[2])
             elif kind == "click" and self.window:
                 self.window.click_screen(ev[1], ev[2])
-        self.tk.after(8, self._pump)
 
     def run(self):
         import tkinter as tk
@@ -350,6 +497,7 @@ class Agent:
         self.tk.withdraw()
         self.tk.protocol("WM_DELETE_WINDOW", self.tk.destroy)
         threading.Thread(target=self._hook_thread, daemon=True).start()
+        threading.Thread(target=self._selection_worker, daemon=True).start()
         self.tk.after(8, self._pump)
         self.log.info("Hold helper started (hold %.2fs)", self.hold)
         self.tk.mainloop()
