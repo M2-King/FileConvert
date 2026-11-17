@@ -8,7 +8,7 @@ where py >nul 2>nul && set "PY=py -3"
 if not exist ".venv\Scripts\python.exe" %PY% -m venv .venv || goto :fail
 ".venv\Scripts\python.exe" -m pip install --quiet -r requirements.txt pyinstaller || goto :fail
 ".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --windowed --name FileConvert ^
-    --icon assets\icon.ico --collect-all pillow_heif --collect-submodules fileconvert --collect-submodules comtypes launcher.py || goto :fail
+    --icon assets\icon.ico --collect-all pillow_heif --collect-all pypdfium2 --collect-all pypdfium2_raw --collect-all pdf2docx --collect-all docx --collect-submodules fileconvert --collect-submodules comtypes launcher.py || goto :fail
 if exist bin\ffmpeg.exe (
   if not exist dist\FileConvert\bin mkdir dist\FileConvert\bin
   copy /y bin\ffmpeg.exe dist\FileConvert\bin\ >nul

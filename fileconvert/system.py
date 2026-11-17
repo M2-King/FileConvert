@@ -181,6 +181,11 @@ def available_engines():
             pass
     except ImportError:
         pass
+    try:
+        import pypdfium2  # noqa: F401
+        engines.add("pdf")
+    except ImportError:
+        pass
     if find_ffmpeg():
         engines.add("ffmpeg")
     if find_soffice():

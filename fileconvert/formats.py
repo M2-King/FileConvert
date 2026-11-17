@@ -5,6 +5,7 @@ Engines:
     heif    - lets Pillow read iPhone HEIC/HEIF photos (pillow-heif)
     ffmpeg  - audio and video
     soffice - LibreOffice, for Word / Excel / PowerPoint style documents
+    pdf     - PDF to Word, text and page images (pypdfium2 + pdf2docx, bundled)
 """
 from collections import namedtuple
 
@@ -33,6 +34,8 @@ CATEGORIES = {
                           ["pdf", "xlsx", "ods", "csv"]),
     "slides": ("soffice", ["ppt", "pptx", "odp"],
                           ["pdf", "pptx", "odp"]),
+    "pdf":    ("pdf",     ["pdf"],
+                          ["docx", "txt", "png", "jpg"]),
 }
 
 # Extra cross-category conversions for specific inputs.
@@ -63,6 +66,8 @@ def _label(category, target):
         return "GIF (animated)"
     if category == "image" and target in ("mp4", "webm"):
         return f"{target.upper()} (video)"
+    if category == "pdf":
+        return {"docx": "DOCX (Word)", "txt": "TXT (text)", "png": "PNG (pages)", "jpg": "JPG (pages)"}[target]
     return target.upper()
 
 

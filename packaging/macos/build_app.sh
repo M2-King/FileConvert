@@ -41,7 +41,8 @@ fi
 echo "== 3. App bundle"
 "$PY" -m PyInstaller --noconfirm --clean --windowed --name FileConvert \
   --icon assets/icon.icns --osx-bundle-identifier com.fileconvert.app \
-  --collect-all pillow_heif --collect-submodules fileconvert \
+  --collect-all pillow_heif --collect-all pypdfium2 --collect-all pypdfium2_raw \
+  --collect-all pdf2docx --collect-all docx --collect-submodules fileconvert \
   --add-data "macos:macos" --add-binary "build/mac/FileConvertUI:." \
   ${EXTRA[@]+"${EXTRA[@]}"} --distpath dist --workpath build/mac/pyi launcher.py
 

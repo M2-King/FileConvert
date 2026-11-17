@@ -17,7 +17,8 @@ def caption_for(label):
     """'MP3 (audio only)' -> ('MP3', 'audio')."""
     main, _, rest = label.partition(" (")
     rest = rest.rstrip(")")
-    return main, {"audio only": "audio", "animated": "animated", "video": "video"}.get(rest, rest)
+    return main, {"audio only": "audio", "animated": "animated", "video": "video", "word": "Word",
+                  "text": "text", "pages": "pages"}.get(rest.lower(), rest)
 
 
 def fan_arc(room, n):

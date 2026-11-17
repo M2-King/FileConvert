@@ -419,13 +419,20 @@ class Agent:
         files = [p for p in paths if os.path.isfile(p)]
         options = common_targets([Path(p).suffix for p in files], self.engines) if files else []
         if not options or not self.window:
-            self._close_window()
             if not files:
-                notify("Couldn't tell which file you're holding. Try again, or right-click it > Convert to.",
-                       "FileConvert", force=True)
-            elif not options:
-                kinds = ", ".join(sorted({Path(f).suffix.lower() for f in files}))
-                notify(f"No conversions for {kinds} files yet.", "FileConvert", force=True)
+                text = "Couldn't tell which file this is"
+            else:
+                kinds = ", ".join(sorted({(Path(f).suffix.lstrip(".") or "this").upper() for f in files}))
+                text = (f"{kinds} files can't be converted yet" if "," not in kinds
+                        else "These files have no format in common")
+                if any(Path(f).suffix.lower() in (".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".rtf")
+                       for f in files):
+                    text = "Word/Excel/PowerPoint need LibreOffice installed"
+            self.log.info("Hold menu: %s (%s)", text, files)
+            if self.window:
+                self.window.show_message(text)         # stays near the pointer, then fades
+            else:
+                notify(text, "FileConvert", force=True)
             return
         self.files = files
         self.window.open(options, files)

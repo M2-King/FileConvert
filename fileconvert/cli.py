@@ -77,7 +77,10 @@ def convert_one(src, target, engines, progress=None):
         raise ConversionError(f"Can't convert {src.suffix or 'this file'} to {target.upper()}")
     dst = reserve_output(src, target)
     try:
-        ENGINES[options[target].engine](src, dst, target, progress=progress)
+        other = ENGINES[options[target].engine](src, dst, target, progress=progress)
+        if other:                                   # e.g. a folder of page images
+            dst.unlink(missing_ok=True)
+            return Path(other)
         if dst.stat().st_size == 0:
             raise ConversionError("The converter produced an empty file")
     except BaseException:

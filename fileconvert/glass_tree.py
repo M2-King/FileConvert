@@ -66,7 +66,14 @@ class TreeAnimator:
         if self.cancel_t is None and self.choice is None:
             self.cancel_t = now
 
+    def show_message(self, now):
+        self.message_t = now
+        if self.open_t is None:
+            self.open_t = now
+
     def finished(self, now):
+        if getattr(self, "message_t", None) is not None:
+            return now - self.message_t > 2.6
         if self.choice_t is not None:
             return now - self.choice_t > 0.52
         if self.cancel_t is not None:
@@ -115,6 +122,10 @@ class TreeAnimator:
                                  "glint": glint if 0 < glint < 1 else None})
         if self.cancel_t is not None:
             st["alpha"] = 1 - ease_out((now - self.cancel_t - 0.18) / 0.16)
+        mt = getattr(self, "message_t", None)
+        if mt is not None:
+            t = now - mt
+            st["message"] = spring(t, 0.42, 0.62) * (1 - ease_out((t - 2.2) / 0.35))
         return st
 
 
@@ -209,6 +220,32 @@ class TreeRenderer:
         return {"normal": normal, "lit": lit, "refl": reflection(normal), "refl_lit": reflection(lit),
                 "pad": pad, "h": h, "origin": (x0, y0)}
 
+    def set_message(self, text):
+        """A glass pill with a short message, shown next to the held file."""
+        s, th = self.s, self.th
+        d = ImageDraw.Draw(Image.new("L", (1, 1)))
+        w = d.textlength(text, font=self.f_main) / s + 32
+        h = 34
+        pad = int(10 * s)
+        W, H = int(w * s) + 2 * pad, int(h * s) + 2 * pad
+        ss = 3
+        mask = Image.new("L", (W * ss, H * ss), 0)
+        ImageDraw.Draw(mask).rounded_rectangle([pad * ss, pad * ss, (W - pad) * ss, (H - pad) * ss],
+                                               radius=h * s / 2 * ss, fill=255)
+        mask = mask.resize((W, H), Image.LANCZOS)
+        rx, ry = self.root
+        cx = min(max(rx + w * s / 2 + 34 * s, W / 2), self.W - W / 2)
+        cy = ry
+        glass = self.frosted.crop((int(cx - W / 2), int(cy - H / 2), int(cx - W / 2) + W, int(cy - H / 2) + H))
+        sp = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        shadow = mask.filter(ImageFilter.GaussianBlur(5 * s)).point(lambda v: int(v * 0.35))
+        sp.paste((0, 0, 0, 255), (0, int(3 * s)), shadow)
+        sp.paste(glass, (0, 0), mask)
+        sheen = Image.linear_gradient("L").resize((W, H)).point(lambda v: int(255 * th["sheen"] * max(0.0, 1 - v / 128)))
+        sp.paste((255, 255, 255, 255), (0, 0), Image.composite(sheen, Image.new("L", (W, H), 0), mask))
+        ImageDraw.Draw(sp).text((W / 2, H / 2), text, font=self.f_main, anchor="mm", fill=th["title"])
+        self.message = (sp, (cx, cy))
+
     # -- branches -----------------------------------------------------------------------------
     def _branches(self, progress, hover):
         key = (tuple(round(p, 3) for p in progress), hover)
@@ -233,10 +270,14 @@ class TreeRenderer:
             col = ACCENT + (255,) if lit else (255, 255, 255, 238)
             w0, w1 = 3.8 * s, 3.8 * s - 2.2 * s * (n - 1) / (len(pts) - 1)
             local = [((x - bx) * ss, (y - by) * ss) for x, y in seg]
+            if not lit:                                  # thin dark edge: visible on white windows too
+                d.polygon(_ribbon(local, (w0 + 1.6 * s) * ss, (w1 + 1.4 * s) * ss), fill=(40, 40, 60, 90))
             d.polygon(_ribbon(local, w0 * ss, w1 * ss), fill=col)
             tx, ty = local[-1]
             d.ellipse([tx - w1 * ss / 2, ty - w1 * ss / 2, tx + w1 * ss / 2, ty + w1 * ss / 2], fill=col)
             glow_pts = [((x - bx) * q, (y - by) * q) for x, y in seg]
+            shade = [(x, y + 2.5 * s * q) for x, y in glow_pts]
+            g.polygon(_ribbon(shade, 7 * s * q, 5 * s * q), fill=(0, 0, 0, 45))       # soft shadow
             g.polygon(_ribbon(glow_pts, 9 * s * q, 6 * s * q),
                       fill=(ACCENT + (110,)) if lit else (255, 255, 255, 75))
         soft = soft.filter(ImageFilter.GaussianBlur(3.5 * s * q)).resize((bw, bh), Image.BILINEAR)
@@ -249,16 +290,19 @@ class TreeRenderer:
     def _ring(self, progress, alpha, scale):
         ss, s = 4, self.s
         R = RING_R * s * scale
-        D = int(2 * R + 8 * s) * ss // ss
+        D = int(2 * R + 16 * s)
         img = Image.new("RGBA", (D * ss, D * ss), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
         c = D * ss / 2
         lw = int(3.4 * s * ss)
         a = int(255 * alpha)
-        d.ellipse([c - R * ss, c - R * ss, c + R * ss, c + R * ss], outline=(255, 255, 255, int(70 * alpha)), width=lw)
+        box = [c - R * ss, c - R * ss, c + R * ss, c + R * ss]
+        shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ImageDraw.Draw(shadow).ellipse(box, outline=(0, 0, 0, int(90 * alpha)), width=lw * 2)
+        img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(3 * s * ss)))
+        d.ellipse(box, outline=(255, 255, 255, int(200 * alpha)), width=lw)
         if progress > 0.01:
-            d.arc([c - R * ss, c - R * ss, c + R * ss, c + R * ss], -90, -90 + 360 * progress,
-                  fill=(255, 255, 255, a), width=lw)
+            d.arc(box, -90, -90 + 360 * progress, fill=ACCENT + (a,), width=lw)
         return img.resize((D, D), Image.LANCZOS)
 
     # -- frame --------------------------------------------------------------------------------
@@ -292,6 +336,14 @@ class TreeRenderer:
                 rf = refl.resize((rw, rh), Image.BILINEAR)
                 frame.alpha_composite(rf, (int(cx - rw / 2), int(cy + sp["h"] * k / 2 + 2 * self.s)))
             frame.alpha_composite(im, (int(cx - w / 2), int(cy - h / 2)))
+        if st.get("message") and getattr(self, "message", None):
+            sp, (cx, cy) = self.message
+            k = max(0.0, st["message"])
+            if k > 0.01:
+                w, h = max(1, int(sp.width * k)), max(1, int(sp.height * k))
+                im = sp.resize((w, h), Image.BILINEAR)
+                im.putalpha(im.getchannel("A").point(lambda v: int(v * min(1.0, k * 1.3))))
+                frame.alpha_composite(im, (int(cx - w / 2), int(cy - h / 2)))
         out = frame.convert("RGB")
         if st["alpha"] < 0.998:
             out = Image.blend(self.backdrop, out, max(0.0, st["alpha"]))

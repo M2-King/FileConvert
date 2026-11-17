@@ -32,6 +32,7 @@ jobs:
         run: >
           python -m PyInstaller --noconfirm --clean --windowed --name FileConvert
           --icon assets\icon.ico --collect-all pillow_heif
+          --collect-all pypdfium2 --collect-all pypdfium2_raw --collect-all pdf2docx --collect-all docx
           --collect-submodules fileconvert --collect-submodules comtypes launcher.py
       - name: Add ffmpeg to the app
         shell: pwsh
@@ -45,7 +46,12 @@ jobs:
           & bin\ffmpeg.exe -loglevel error -f lavfi -i "sine=f=440:d=1" smoke.wav
           Start-Process -Wait -FilePath dist\FileConvert\FileConvert.exe -ArgumentList 'run','--to','jpg',"$PWD\smoke.png"
           Start-Process -Wait -FilePath dist\FileConvert\FileConvert.exe -ArgumentList 'run','--to','mp3',"$PWD\smoke.wav"
+          python -c "from PIL import Image; Image.new('RGB',(600,800),(255,255,255)).save('smokedoc.pdf')"
+          Start-Process -Wait -FilePath dist\FileConvert\FileConvert.exe -ArgumentList 'run','--to','png',"$PWD\smokedoc.pdf"
+          Start-Process -Wait -FilePath dist\FileConvert\FileConvert.exe -ArgumentList 'run','--to','docx',"$PWD\smokedoc.pdf"
+          Get-ChildItem smoke*
           if (!(Test-Path smoke.jpg) -or !(Test-Path smoke.mp3)) { throw "The built app didn't convert the test files" }
+          if (!(Test-Path smokedoc.png) -or !(Test-Path smokedoc.docx)) { throw "The built app didn't convert the test PDF" }
       - name: Build the installer
         shell: pwsh
         run: |
@@ -76,7 +82,9 @@ jobs:
         run: |
           python -c "from PIL import Image; Image.new('RGB',(64,64),(200,80,40)).save('smoke.png')"
           dist/FileConvert.app/Contents/MacOS/FileConvert run --to jpg "$PWD/smoke.png"
-          test -f smoke.jpg
+          python -c "from PIL import Image; Image.new('RGB',(600,800),(255,255,255)).save('smokedoc.pdf')"
+          dist/FileConvert.app/Contents/MacOS/FileConvert run --to png "$PWD/smokedoc.pdf"
+          test -f smoke.jpg && test -f smokedoc.png
       - uses: actions/upload-artifact@v4
         with:
           name: macos

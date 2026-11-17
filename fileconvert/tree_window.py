@@ -72,6 +72,11 @@ class TreeWindow:
         self.anim.set_count(len(self.lay["leaves"]))
         self.anim.open(time.perf_counter())
 
+    def show_message(self, text):
+        """Explain in place why nothing can be offered (e.g. an unsupported file type)."""
+        self.renderer.set_message(text)
+        self.anim.show_message(time.perf_counter())
+
     def hover_screen(self, x, y):
         if self.lay:
             self.anim.set_hover(self.renderer.hit(*self._local(x, y)))

@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from .system import (ConversionError, data_dir, file_lock, find_ffmpeg, find_soffice,
-                     friendly_error, run_quiet, settings)
+                     friendly_error, get_logger, run_quiet, settings)
 
 
 # ----------------------------------------------------------------------------- images (Pillow)
@@ -247,8 +247,103 @@ def convert_document(src, dst, target, progress=None):
             shutil.copyfile(out, dst)
 
 
+# ----------------------------------------------------------------------------- PDF
+
+def convert_pdf(src, dst, target, progress=None):
+    """PDF -> Word (DOCX), plain text, or one image per page."""
+    import pypdfium2 as pdfium
+    try:
+        doc = pdfium.PdfDocument(str(src))
+    except Exception as e:
+        raise ConversionError(f"Can't open this PDF ({e}). It may be damaged or password-protected.")
+    pages = len(doc)
+    if pages == 0:
+        raise ConversionError("This PDF has no pages")
+
+    if target in ("png", "jpg"):
+        dst = Path(dst)
+        if pages == 1:
+            outputs = [dst]
+            folder = None
+        else:                                   # one image per page, in a folder next to the PDF
+            folder = dst.with_name(f"{dst.stem} ({target.upper()} pages)")
+            i = 1
+            while folder.exists():
+                folder = dst.with_name(f"{dst.stem} ({target.upper()} pages {i})")
+                i += 1
+            folder.mkdir()
+            width = len(str(pages))
+            outputs = [folder / f"{dst.stem} page {n + 1:0{width}d}.{target}" for n in range(pages)]
+        for n in range(pages):
+            image = doc[n].render(scale=2).to_pil()          # 144 dpi: sharp on screen, fine to print
+            if target == "jpg":
+                image = image.convert("RGB")
+                image.save(outputs[n], "JPEG", quality=int(settings()["jpg_quality"]), optimize=True)
+            else:
+                image.save(outputs[n], "PNG")
+            if progress:
+                progress((n + 1) / pages)
+        doc.close()
+        return folder                                        # a folder replaces the single file
+
+    if target == "txt":
+        parts = []
+        for n in range(pages):
+            textpage = doc[n].get_textpage()
+            parts.append(textpage.get_text_range().replace("\r\n", "\n").strip())
+            textpage.close()
+            if progress:
+                progress((n + 1) / pages)
+        doc.close()
+        text = "\n\n".join(parts).strip()
+        if not text:
+            raise ConversionError("This PDF has no text to copy (it may be scanned pictures)")
+        Path(dst).write_text(text + "\n", encoding="utf-8")
+        return None
+
+    if target == "docx":
+        doc.close()
+        try:
+            from pdf2docx import Converter                  # keeps layout, tables and pictures
+        except ImportError:
+            Converter = None
+        if Converter is not None:
+            try:
+                cv = Converter(str(src))
+                cv.convert(str(dst))
+                cv.close()
+                return None
+            except Exception as e:
+                get_logger().warning("pdf2docx failed (%s), using plain text Word file", e)
+        _pdf_to_simple_docx(src, dst, progress)
+        return None
+    raise ConversionError(f"Can't make {target.upper()} from a PDF")
+
+
+def _pdf_to_simple_docx(src, dst, progress=None):
+    """Fallback: a Word file with the PDF's text, one page per page."""
+    import pypdfium2 as pdfium
+    from docx import Document
+    word = Document()
+    doc = pdfium.PdfDocument(str(src))
+    for n in range(len(doc)):
+        textpage = doc[n].get_textpage()
+        text = textpage.get_text_range().replace("\r\n", "\n")
+        textpage.close()
+        for para in text.split("\n\n"):
+            if para.strip():
+                word.add_paragraph(para.strip())
+        if n < len(doc) - 1:
+            word.add_page_break()
+        if progress:
+            progress((n + 1) / len(doc))
+    doc.close()
+    word.save(str(dst))
+
+
 ENGINES = {
     "pillow": convert_image,
     "ffmpeg": convert_media,
     "soffice": convert_document,
+    "pdf": convert_pdf,
 }

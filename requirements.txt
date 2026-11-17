@@ -1,3 +1,5 @@
 Pillow>=10.0
 pillow-heif>=0.16
+pypdfium2>=4.20
+pdf2docx>=0.5.8
 comtypes>=1.2; sys_platform == "win32"
